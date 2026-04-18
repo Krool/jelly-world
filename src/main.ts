@@ -23,12 +23,12 @@ const PIN_TIP_SPEED = 3.5;
 const PIN_GRAVITY_ANG = 18;
 const FALL_LIMIT = -18;
 const MIN_PLAYER_RADIUS = 0.5;
-const SHED_SPEED_THRESHOLD = 14;
+const SHED_SPEED_THRESHOLD = 9;
 const RAIN_INTERVAL = 1.4;
 const RAIN_SPAWN_Y = 42;
 const RAIN_RADIUS = 22;
 const MAX_JELLIES = 48;
-const JELLY_SPLIT_MIN_RADIUS = 0.26;
+const JELLY_SPLIT_MIN_RADIUS = 0.4;
 
 type Platform = {
   aabb: THREE.Box3;
@@ -362,17 +362,17 @@ function start(): void {
 
   const shedPieces = (impactSpeed: number): void => {
     if (playerRadius <= MIN_PLAYER_RADIUS + 0.01) return;
-    const excess = Math.min(impactSpeed - SHED_SPEED_THRESHOLD, 22);
-    const shedFrac = Math.min(0.28, excess / 60);
+    const excess = Math.min(impactSpeed - SHED_SPEED_THRESHOLD, 26);
+    const shedFrac = Math.min(0.3, excess / 70);
     const playerVol = playerRadius ** 3;
     const minVol = MIN_PLAYER_RADIUS ** 3;
     const maxShedVol = Math.max(0, playerVol - minVol);
     const shedVol = Math.min(playerVol * shedFrac, maxShedVol);
-    if (shedVol < 0.015) return;
-    const numShards = 4;
+    if (shedVol < 0.004) return;
+    const numShards = excess < 6 ? 2 : 3;
     const shardVol = shedVol / numShards;
     const shardRadius = Math.cbrt(shardVol);
-    if (shardRadius < 0.14) return;
+    if (shardRadius < 0.09) return;
     sfx.shed();
     for (let i = 0; i < numShards; i++) {
       const a = (i / numShards) * Math.PI * 2 + Math.random() * 0.4;
@@ -464,7 +464,7 @@ function start(): void {
     '<div style="font-weight:700;margin-bottom:0.5rem;font-size:1rem">Controls</div>' +
     '<div style="display:grid;grid-template-columns:auto 1fr;gap:0.3rem 0.8rem">' +
     '<kbd>WASD</kbd><span>Move</span>' +
-    '<kbd>Arrows</kbd><span>Move</span>' +
+    '<kbd>Arrows</kbd><span>Orbit camera</span>' +
     '<kbd>Space</kbd><span>Jump (triple)</span>' +
     '<kbd>Shift</kbd><span>Roll (fast)</span>' +
     '<kbd>R</kbd><span>Respawn</span>' +
@@ -562,7 +562,12 @@ function start(): void {
   const tmpClamp = new THREE.Vector3();
   const tmpVec = new THREE.Vector3();
   const yAxis = new THREE.Vector3(0, 1, 0);
-  const camYaw = 0;
+  let camYaw = 0;
+  let camPitch = 0;
+  const CAM_YAW_SPEED = 2.2;
+  const CAM_PITCH_SPEED = 1.6;
+  const CAM_PITCH_MIN = -0.5;
+  const CAM_PITCH_MAX = 1.0;
   const clock = new THREE.Clock();
 
   const collideAabb = (aabb: THREE.Box3, bounceV: number): void => {
@@ -713,12 +718,17 @@ function start(): void {
     const dt = Math.min(clock.getDelta(), 0.05);
     const t = clock.getElapsedTime();
 
+    if (keys['ArrowLeft']) camYaw -= CAM_YAW_SPEED * dt;
+    if (keys['ArrowRight']) camYaw += CAM_YAW_SPEED * dt;
+    if (keys['ArrowUp']) camPitch = Math.min(CAM_PITCH_MAX, camPitch + CAM_PITCH_SPEED * dt);
+    if (keys['ArrowDown']) camPitch = Math.max(CAM_PITCH_MIN, camPitch - CAM_PITCH_SPEED * dt);
+
     if (!won) {
       let ix = 0, iz = 0;
-      if (keys['KeyW'] || keys['ArrowUp']) iz -= 1;
-      if (keys['KeyS'] || keys['ArrowDown']) iz += 1;
-      if (keys['KeyA'] || keys['ArrowLeft']) ix -= 1;
-      if (keys['KeyD'] || keys['ArrowRight']) ix += 1;
+      if (keys['KeyW']) iz -= 1;
+      if (keys['KeyS']) iz += 1;
+      if (keys['KeyA']) ix -= 1;
+      if (keys['KeyD']) ix += 1;
       const rolling = !!(keys['ShiftLeft'] || keys['ShiftRight'] || keys['KeyK']);
       const inLen = Math.hypot(ix, iz);
       if (inLen > 0) { ix /= inLen; iz /= inLen; }
@@ -1061,9 +1071,11 @@ function start(): void {
 
     const camDist = 7 + playerRadius * 2.2;
     const camHeight = 3.5 + playerRadius * 1.2;
-    const targetCamX = player.position.x - Math.sin(camYaw) * camDist;
-    const targetCamZ = player.position.z + Math.cos(camYaw) * camDist;
-    const targetCamY = player.position.y + camHeight;
+    const horizDist = camDist * Math.cos(camPitch);
+    const vertOffset = camDist * Math.sin(camPitch);
+    const targetCamX = player.position.x - Math.sin(camYaw) * horizDist;
+    const targetCamZ = player.position.z + Math.cos(camYaw) * horizDist;
+    const targetCamY = player.position.y + camHeight + vertOffset;
     const cK = 1 - Math.exp(-5 * dt);
     camera.position.x += (targetCamX - camera.position.x) * cK;
     camera.position.y += (targetCamY - camera.position.y) * cK;
