@@ -1,10 +1,12 @@
 import * as THREE from 'three';
+import { initAudio, sfx } from './audio';
 
 const bootEl = document.getElementById('boot')!;
 const bootBtn = document.getElementById('boot-start') as HTMLButtonElement;
 const appEl = document.getElementById('app')!;
 
 bootBtn.addEventListener('click', () => {
+  initAudio();
   bootEl.remove();
   start();
 });
@@ -22,6 +24,11 @@ const PIN_GRAVITY_ANG = 18;
 const FALL_LIMIT = -18;
 const MIN_PLAYER_RADIUS = 0.5;
 const SHED_SPEED_THRESHOLD = 14;
+const RAIN_INTERVAL = 1.4;
+const RAIN_SPAWN_Y = 42;
+const RAIN_RADIUS = 22;
+const MAX_JELLIES = 48;
+const JELLY_SPLIT_MIN_RADIUS = 0.26;
 
 type Platform = {
   aabb: THREE.Box3;
@@ -36,6 +43,11 @@ type Jelly = {
   radius: number;
   phase: number;
   homeY: number;
+  color: number;
+  vel: THREE.Vector3;
+  grounded: boolean;
+  wasGrounded: boolean;
+  fallPeakVy: number;
 };
 
 type Pin = {
@@ -276,6 +288,7 @@ function start(): void {
   type Pusher = {
     mesh: THREE.Mesh;
     restPos: THREE.Vector3;
+    prevPos: THREE.Vector3;
     extendDir: THREE.Vector3;
     extendDist: number;
     period: number;
@@ -299,6 +312,7 @@ function start(): void {
     pushers.push({
       mesh,
       restPos: new THREE.Vector3(x, y, z),
+      prevPos: new THREE.Vector3(x, y, z),
       extendDir: new THREE.Vector3(dirX, 0, dirZ).normalize(),
       extendDist, period, phase,
       halfSize: new THREE.Vector3(sx / 2, sy / 2, sz / 2),
@@ -306,8 +320,20 @@ function start(): void {
     });
   };
 
-  addPusher(-6, 4.5, -6, 0.8, 1.4, 1.8, 1, 0, 3.0, 2.2, 0);
-  addPusher(7, 17, 0, 0.8, 1.4, 1.8, -1, 0, 3.0, 2.6, 1.0);
+  const addPusherOn = (
+    plat: Platform, localX: number, localZ: number,
+    sx: number, sy: number, sz: number,
+    dirX: number, dirZ: number,
+    extendDist: number, period: number, phase = 0,
+  ): void => {
+    const cx = (plat.aabb.min.x + plat.aabb.max.x) / 2;
+    const cz = (plat.aabb.min.z + plat.aabb.max.z) / 2;
+    const topY = plat.aabb.max.y;
+    addPusher(cx + localX, topY + sy / 2, cz + localZ, sx, sy, sz, dirX, dirZ, extendDist, period, phase);
+  };
+
+  addPusherOn(platforms[4]!, 1.5, 0, 0.8, 1.4, 1.8, -1, 0, 2.5, 2.2, 0);
+  addPusherOn(platforms[8]!, 0, 1.5, 0.8, 1.4, 1.8, 0, -1, 2.5, 2.6, 1.0);
 
   const jellies: Jelly[] = [];
   const shards: Shard[] = [];
@@ -347,6 +373,7 @@ function start(): void {
     const shardVol = shedVol / numShards;
     const shardRadius = Math.cbrt(shardVol);
     if (shardRadius < 0.14) return;
+    sfx.shed();
     for (let i = 0; i < numShards; i++) {
       const a = (i / numShards) * Math.PI * 2 + Math.random() * 0.4;
       const outDir = { x: Math.cos(a), z: Math.sin(a) };
@@ -361,15 +388,29 @@ function start(): void {
     playerRadius = Math.cbrt(playerVol - shedVol);
   };
 
-  const spawnJelly = (x: number, y: number, z: number, r: number): void => {
-    const color = palette[jellies.length % palette.length] ?? 0xffffff;
+  const spawnJellyAt = (
+    x: number, yCenter: number, z: number, r: number,
+    opts: { color?: number; grounded?: boolean; vel?: THREE.Vector3 } = {},
+  ): Jelly => {
+    const color = opts.color ?? palette[jellies.length % palette.length] ?? 0xffffff;
     const mesh = new THREE.Mesh(
       new THREE.IcosahedronGeometry(r, 2),
       new THREE.MeshStandardMaterial({ color, roughness: 0.3 }),
     );
-    mesh.position.set(x, y + r, z);
+    mesh.position.set(x, yCenter, z);
     scene.add(mesh);
-    jellies.push({ mesh, radius: r, phase: Math.random() * Math.PI * 2, homeY: y + r });
+    const grounded = opts.grounded ?? true;
+    const jelly: Jelly = {
+      mesh, radius: r, phase: Math.random() * Math.PI * 2, homeY: yCenter, color,
+      vel: opts.vel ? opts.vel.clone() : new THREE.Vector3(),
+      grounded, wasGrounded: grounded, fallPeakVy: 0,
+    };
+    jellies.push(jelly);
+    return jelly;
+  };
+
+  const spawnJelly = (x: number, y: number, z: number, r: number): void => {
+    spawnJellyAt(x, y + r, z, r);
   };
 
   for (let i = 0; i < 10; i++) {
@@ -468,6 +509,7 @@ function start(): void {
     player.position.copy(lastSafe);
     vel.set(0, 0, 0);
     fallPeakVy = 0;
+    sfx.respawn();
   };
 
   const setShape = (n: number): void => {
@@ -486,6 +528,7 @@ function start(): void {
       default: g = new THREE.IcosahedronGeometry(1, 3);
     }
     player.geometry = g;
+    sfx.shape();
   };
 
   const keys: Record<string, boolean> = {};
@@ -514,6 +557,7 @@ function start(): void {
   let won = false;
   let winTime = 0;
   let absorbCount = 0;
+  let rainTimer = 0.5;
 
   const tmpClamp = new THREE.Vector3();
   const tmpVec = new THREE.Vector3();
@@ -543,6 +587,7 @@ function start(): void {
       vel.x -= nx * vn;
       vel.y -= ny * vn;
       vel.z -= nz * vn;
+      if (vn < -3) sfx.thud(-vn);
     }
     if (ny > 0.6) {
       jumpsLeft = MAX_JUMPS;
@@ -573,11 +618,49 @@ function start(): void {
 
   const updatePushers = (time: number): void => {
     for (const pu of pushers) {
+      pu.prevPos.copy(pu.mesh.position);
       const ph = ((time + pu.phase) % pu.period) / pu.period;
       const cycle = 0.5 * (1 - Math.cos(ph * Math.PI * 2));
       pu.mesh.position.copy(pu.restPos).addScaledVector(pu.extendDir, cycle * pu.extendDist);
       pu.aabb.min.copy(pu.mesh.position).sub(pu.halfSize);
       pu.aabb.max.copy(pu.mesh.position).add(pu.halfSize);
+    }
+  };
+
+  const collidePusher = (pu: Pusher, dtLocal: number): void => {
+    tmpClamp.set(
+      Math.max(pu.aabb.min.x, Math.min(player.position.x, pu.aabb.max.x)),
+      Math.max(pu.aabb.min.y, Math.min(player.position.y, pu.aabb.max.y)),
+      Math.max(pu.aabb.min.z, Math.min(player.position.z, pu.aabb.max.z)),
+    );
+    const ddx = player.position.x - tmpClamp.x;
+    const ddy = player.position.y - tmpClamp.y;
+    const ddz = player.position.z - tmpClamp.z;
+    const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+    if (d2 >= playerRadius * playerRadius || d2 <= 1e-8) return;
+    const d = Math.sqrt(d2);
+    const nx = ddx / d, ny = ddy / d, nz = ddz / d;
+    const overlap = playerRadius - d;
+    player.position.x += nx * overlap;
+    player.position.y += ny * overlap;
+    player.position.z += nz * overlap;
+    const vn = vel.x * nx + vel.y * ny + vel.z * nz;
+    if (vn < 0) {
+      vel.x -= nx * vn;
+      vel.y -= ny * vn;
+      vel.z -= nz * vn;
+    }
+    if (ny > 0.6) {
+      jumpsLeft = MAX_JUMPS;
+      grounded = true;
+    }
+    const invDt = 1 / Math.max(dtLocal, 1e-4);
+    const pvx = (pu.mesh.position.x - pu.prevPos.x) * invDt;
+    const pvz = (pu.mesh.position.z - pu.prevPos.z) * invDt;
+    const vpush = pvx * nx + pvz * nz;
+    if (vpush > 0) {
+      vel.x += nx * vpush * 1.3;
+      vel.z += nz * vpush * 1.3;
     }
   };
 
@@ -612,6 +695,7 @@ function start(): void {
       if (pSpeed > PIN_TIP_SPEED) {
         pin.tipDir.set(vel.x / pSpeed, 0, vel.z / pSpeed);
         pin.angVel = Math.min(pSpeed * 1.3, 9);
+        sfx.pinHit(true);
       } else {
         const nrm = hd || 1e-3;
         const nx = dxp / nrm, nz = dzp / nrm;
@@ -620,6 +704,7 @@ function start(): void {
         player.position.z += nz * ov;
         vel.x *= 0.4;
         vel.z *= 0.4;
+        sfx.pinHit(false);
       }
     }
   };
@@ -649,6 +734,7 @@ function start(): void {
       vel.z += (dz * speed - vel.z) * k;
 
       if (jumpQueued && jumpsLeft > 0) {
+        if (grounded) sfx.jump(); else sfx.airJump(MAX_JUMPS - jumpsLeft);
         vel.y = grounded ? JUMP_V : AIR_JUMP_V;
         grounded = false;
         jumpsLeft--;
@@ -694,6 +780,8 @@ function start(): void {
             jumpsLeft = MAX_JUMPS;
             if (p.bounceV > 0) {
               vel.y = p.bounceV;
+              if (p.bounceV >= TRAMPOLINE_V - 0.1) sfx.trampoline();
+              else sfx.bouncePad();
             } else {
               grounded = true;
             }
@@ -702,12 +790,13 @@ function start(): void {
       }
 
       for (const s of swingers) collideAabb(s.aabb, 0);
-      for (const pu of pushers) collideAabb(pu.aabb, 0);
+      for (const pu of pushers) collidePusher(pu, dt);
       collidePins();
 
       if (grounded && !wasGrounded) {
         const impactSpeed = -fallPeakVy;
         if (impactSpeed > SHED_SPEED_THRESHOLD) shedPieces(impactSpeed);
+        else if (impactSpeed > 1.5) sfx.land(impactSpeed);
       }
       if (grounded) fallPeakVy = 0;
 
@@ -724,9 +813,123 @@ function start(): void {
 
       if (player.position.y < FALL_LIMIT) respawn();
 
+      rainTimer -= dt;
+      if (rainTimer <= 0 && jellies.length < MAX_JELLIES) {
+        rainTimer = RAIN_INTERVAL * (0.7 + Math.random() * 0.6);
+        const a = Math.random() * Math.PI * 2;
+        const r = Math.random() * RAIN_RADIUS;
+        const rad = 0.4 + Math.random() * 0.6;
+        spawnJellyAt(
+          Math.cos(a) * r,
+          RAIN_SPAWN_Y + Math.random() * 6,
+          Math.sin(a) * r,
+          rad,
+          {
+            grounded: false,
+            vel: new THREE.Vector3((Math.random() - 0.5) * 1.5, 0, (Math.random() - 0.5) * 1.5),
+          },
+        );
+      }
+
       for (let i = jellies.length - 1; i >= 0; i--) {
         const j = jellies[i]!;
-        j.mesh.position.y = j.homeY + Math.sin(t * 1.6 + j.phase) * 0.12;
+
+        if (!j.grounded) {
+          j.vel.y -= GRAVITY * dt;
+          if (j.vel.y < j.fallPeakVy) j.fallPeakVy = j.vel.y;
+          j.mesh.position.x += j.vel.x * dt;
+          j.mesh.position.y += j.vel.y * dt;
+          j.mesh.position.z += j.vel.z * dt;
+          const drag = Math.exp(-0.5 * dt);
+          j.vel.x *= drag;
+          j.vel.z *= drag;
+
+          j.wasGrounded = j.grounded;
+          j.grounded = false;
+          for (const p of platforms) {
+            const cx = Math.max(p.aabb.min.x, Math.min(j.mesh.position.x, p.aabb.max.x));
+            const cy = Math.max(p.aabb.min.y, Math.min(j.mesh.position.y, p.aabb.max.y));
+            const cz = Math.max(p.aabb.min.z, Math.min(j.mesh.position.z, p.aabb.max.z));
+            const ddx = j.mesh.position.x - cx;
+            const ddy = j.mesh.position.y - cy;
+            const ddz = j.mesh.position.z - cz;
+            const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+            if (d2 < j.radius * j.radius && d2 > 1e-8) {
+              const dd = Math.sqrt(d2);
+              const nx = ddx / dd, ny = ddy / dd, nz = ddz / dd;
+              const ov = j.radius - dd;
+              j.mesh.position.x += nx * ov;
+              j.mesh.position.y += ny * ov;
+              j.mesh.position.z += nz * ov;
+              const vn = j.vel.x * nx + j.vel.y * ny + j.vel.z * nz;
+              if (vn < 0) {
+                j.vel.x -= nx * vn;
+                j.vel.y -= ny * vn;
+                j.vel.z -= nz * vn;
+              }
+              if (ny > 0.6) {
+                if (p.bounceV > 0) {
+                  j.vel.y = p.bounceV * 0.75;
+                  j.fallPeakVy = 0;
+                } else {
+                  j.grounded = true;
+                }
+              }
+            }
+          }
+
+          if (j.grounded && !j.wasGrounded) {
+            const impact = -j.fallPeakVy;
+            if (impact > SHED_SPEED_THRESHOLD && j.radius > JELLY_SPLIT_MIN_RADIUS) {
+              const totalVol = j.radius ** 3;
+              const numPieces = 3;
+              const pieceVol = (totalVol * 0.55) / numPieces;
+              const pieceR = Math.cbrt(pieceVol);
+              const px = j.mesh.position.x;
+              const py = j.mesh.position.y;
+              const pz = j.mesh.position.z;
+              const col = j.color;
+              scene.remove(j.mesh);
+              j.mesh.geometry.dispose();
+              (j.mesh.material as THREE.Material).dispose();
+              jellies.splice(i, 1);
+              if (pieceR > 0.14 && jellies.length + numPieces <= MAX_JELLIES) {
+                for (let k = 0; k < numPieces; k++) {
+                  const ang = (k / numPieces) * Math.PI * 2 + Math.random() * 0.5;
+                  const sp = 2.8 + Math.random() * 2;
+                  spawnJellyAt(
+                    px + Math.cos(ang) * j.radius * 0.5,
+                    py + pieceR,
+                    pz + Math.sin(ang) * j.radius * 0.5,
+                    pieceR,
+                    {
+                      color: col, grounded: false,
+                      vel: new THREE.Vector3(
+                        Math.cos(ang) * sp, 3 + Math.random() * 1.5, Math.sin(ang) * sp,
+                      ),
+                    },
+                  );
+                }
+              }
+              continue;
+            }
+            j.homeY = j.mesh.position.y;
+            j.phase = Math.random() * Math.PI * 2;
+            j.fallPeakVy = 0;
+            j.vel.set(0, 0, 0);
+          }
+
+          if (j.mesh.position.y < FALL_LIMIT) {
+            scene.remove(j.mesh);
+            j.mesh.geometry.dispose();
+            (j.mesh.material as THREE.Material).dispose();
+            jellies.splice(i, 1);
+            continue;
+          }
+        } else {
+          j.mesh.position.y = j.homeY + Math.sin(t * 1.6 + j.phase) * 0.12;
+        }
+
         const jdx = j.mesh.position.x - player.position.x;
         const jdz = j.mesh.position.z - player.position.z;
         const jdy = j.mesh.position.y - player.position.y;
@@ -742,6 +945,7 @@ function start(): void {
             (j.mesh.material as THREE.Material).dispose();
             jellies.splice(i, 1);
             absorbCount++;
+            sfx.absorb(j.radius);
             continue;
           } else {
             const nrm = d || 1;
@@ -753,6 +957,7 @@ function start(): void {
             vel.z -= nz * 7;
             vel.y = Math.max(vel.y, 3);
             grounded = false;
+            sfx.bumpJelly();
           }
         }
         const s = 1 + Math.sin(t * 2 + j.phase) * 0.04;
@@ -773,6 +978,7 @@ function start(): void {
           s.mesh.geometry.dispose();
           (s.mesh.material as THREE.Material).dispose();
           shards.splice(i, 1);
+          sfx.shard();
           continue;
         }
 
@@ -834,6 +1040,7 @@ function start(): void {
         stats.textContent =
           `Time: ${winTime.toFixed(1)}s · Jellies absorbed: ${absorbCount} · Size: ${playerRadius.toFixed(2)}`;
         victoryEl.style.display = 'grid';
+        sfx.victory();
       }
     }
 
