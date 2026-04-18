@@ -161,7 +161,7 @@ function start(): void {
     }
 
     for (let i = jellies.length - 1; i >= 0; i--) {
-      const j = jellies[i];
+      const j = jellies[i]!;
       const jdx = j.mesh.position.x - player.position.x;
       const jdz = j.mesh.position.z - player.position.z;
       const jdy = j.mesh.position.y - player.position.y;
