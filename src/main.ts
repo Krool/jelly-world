@@ -181,7 +181,7 @@ function start(): void {
   scene.add(beam);
 
   let playerRadius = 1;
-  const player = new THREE.Mesh(
+  const player = new THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>(
     new THREE.IcosahedronGeometry(1, 3),
     new THREE.MeshStandardMaterial({ color: 0xff8fd8, roughness: 0.3 }),
   );
@@ -864,12 +864,14 @@ function start(): void {
     camera.lookAt(player.position.x, player.position.y + 1, player.position.z);
 
     const heightPct = Math.max(0, Math.min(1, player.position.y / SUMMIT_Y));
+    const elapsed = won ? winTime : (performance.now() - startTime) / 1000;
+    const label = 'opacity:0.7;font-weight:500';
     hud.innerHTML =
-      `<div>Jellies: ${absorbCount}</div>` +
-      `<div>Height: ${(heightPct * 100).toFixed(0)}%</div>` +
-      `<div>Jumps: ${jumpsLeft}/${MAX_JUMPS}</div>` +
-      `<div style="opacity:0.7;font-size:0.85em;margin-top:0.4em">` +
-      `WASD / arrows · Space ×3 jumps · Shift roll · 1-5 shape · R respawn</div>`;
+      `<span style="${label}">Time</span><span>${elapsed.toFixed(1)}s</span>` +
+      `<span style="${label}">Height</span><span>${(heightPct * 100).toFixed(0)}%</span>` +
+      `<span style="${label}">Jellies</span><span>${absorbCount}</span>` +
+      `<span style="${label}">Jumps</span><span>${jumpsLeft}/${MAX_JUMPS}</span>` +
+      `<span style="${label}">Size</span><span>${playerRadius.toFixed(2)}</span>`;
 
     renderer.render(scene, camera);
   });
