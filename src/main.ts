@@ -13,6 +13,8 @@ const GRAVITY = 22;
 const MOVE_SPEED = 6;
 const ROLL_SPEED = 10;
 const JUMP_V = 8;
+const AIR_JUMP_V = 6.8;
+const MAX_JUMPS = 3;
 const BOUNCE_PAD_V = 17;
 const FALL_LIMIT = -18;
 
@@ -135,6 +137,8 @@ function start(): void {
 
   const vel = new THREE.Vector3();
   let grounded = true;
+  let jumpsLeft = MAX_JUMPS;
+  let jumpQueued = false;
   const lastSafe = spawn.clone();
   let lastSafeTimer = 0;
 
@@ -200,7 +204,10 @@ function start(): void {
   const keys: Record<string, boolean> = {};
   window.addEventListener('keydown', (e) => {
     keys[e.code] = true;
-    if (e.code === 'Space') e.preventDefault();
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (!e.repeat) jumpQueued = true;
+    }
     if (e.code === 'KeyR') respawn();
   });
   window.addEventListener('keyup', (e) => { keys[e.code] = false; });
@@ -244,10 +251,12 @@ function start(): void {
       vel.x += (dx * speed - vel.x) * k;
       vel.z += (dz * speed - vel.z) * k;
 
-      if (keys['Space'] && grounded) {
-        vel.y = JUMP_V;
+      if (jumpQueued && jumpsLeft > 0) {
+        vel.y = grounded ? JUMP_V : AIR_JUMP_V;
         grounded = false;
+        jumpsLeft--;
       }
+      jumpQueued = false;
       vel.y -= GRAVITY * dt;
 
       player.position.x += vel.x * dt;
@@ -279,6 +288,7 @@ function start(): void {
             vel.z -= nz * vn;
           }
           if (ny > 0.6) {
+            jumpsLeft = MAX_JUMPS;
             if (p.bouncy) {
               vel.y = BOUNCE_PAD_V;
             } else {
@@ -379,8 +389,9 @@ function start(): void {
     hud.innerHTML =
       `<div>Jellies: ${absorbCount}</div>` +
       `<div>Height: ${(heightPct * 100).toFixed(0)}%</div>` +
+      `<div>Jumps: ${jumpsLeft}/${MAX_JUMPS}</div>` +
       `<div style="opacity:0.7;font-size:0.85em;margin-top:0.4em">` +
-      `WASD / arrows · Space hop · Shift roll · R respawn</div>`;
+      `WASD / arrows · Space ×3 jumps · Shift roll · R respawn</div>`;
 
     renderer.render(scene, camera);
   });
