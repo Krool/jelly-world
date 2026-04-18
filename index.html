@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Jelly World</title>
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #1a1030; color: #fff;
+        font-family: system-ui, -apple-system, sans-serif; overflow: hidden; }
+      #app { position: fixed; inset: 0; }
+      #boot { position: fixed; inset: 0; display: grid; place-items: center; text-align: center;
+        background: radial-gradient(circle at 50% 40%, #39236e 0%, #120826 100%); }
+      #boot button { font: inherit; font-size: 1.1rem; padding: 0.75rem 1.5rem; border-radius: 999px;
+        border: none; background: #ff8fd8; color: #1a1030; cursor: pointer; }
+      #boot p { max-width: 30ch; opacity: 0.8; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="boot">
+      <div>
+        <h1>Jelly World</h1>
+        <p>Click start to enable audio (browser requires a user gesture).</p>
+        <button id="boot-start">Start</button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
