@@ -72,6 +72,8 @@ function start(): void {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setClearColor(0x2a1a4a);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   appEl.appendChild(renderer.domElement);
 
   const scene = new THREE.Scene();
@@ -79,10 +81,23 @@ function start(): void {
 
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 400);
 
-  scene.add(new THREE.HemisphereLight(0xffd4f0, 0x201040, 1.0));
-  const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
-  keyLight.position.set(8, 20, 10);
+  scene.add(new THREE.HemisphereLight(0xffd4f0, 0x201040, 0.65));
+  const keyLight = new THREE.DirectionalLight(0xfff0dd, 1.4);
+  keyLight.position.set(16, 32, 14);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(2048, 2048);
+  keyLight.shadow.camera.left = -36;
+  keyLight.shadow.camera.right = 36;
+  keyLight.shadow.camera.top = 40;
+  keyLight.shadow.camera.bottom = -36;
+  keyLight.shadow.camera.near = 1;
+  keyLight.shadow.camera.far = 100;
+  keyLight.shadow.bias = -0.0004;
+  keyLight.shadow.normalBias = 0.02;
   scene.add(keyLight);
+  const fillLight = new THREE.DirectionalLight(0x9fb8ff, 0.35);
+  fillLight.position.set(-14, 18, -10);
+  scene.add(fillLight);
 
   const platforms: Platform[] = [];
 
@@ -101,6 +116,8 @@ function start(): void {
     });
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
     mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
     scene.add(mesh);
     const half = new THREE.Vector3(sx / 2, sy / 2, sz / 2);
     platforms.push({
@@ -119,6 +136,8 @@ function start(): void {
     new THREE.MeshStandardMaterial({ color: 0x3e2560, roughness: 0.95, flatShading: true }),
   );
   mountain.position.set(0, 16, 0);
+  mountain.castShadow = true;
+  mountain.receiveShadow = true;
   scene.add(mountain);
 
   const NUM_STEPS = 11;
@@ -512,11 +531,20 @@ function start(): void {
     sfx.respawn();
   };
 
-  const setShape = (n: number): void => {
+  let shapeSwapT = 0;
+  let pendingShape: number | null = null;
+  const SHAPE_SWAP_DURATION = 0.4;
+
+  const applyShape = (n: number): void => {
     player.geometry.dispose();
     let g: THREE.BufferGeometry;
     switch (n) {
-      case 2: g = new THREE.CylinderGeometry(1, 1, 0.55, 36); break;
+      case 2: {
+        const cyl = new THREE.CylinderGeometry(1, 1, 0.55, 36);
+        cyl.rotateZ(Math.PI / 2);
+        g = cyl;
+        break;
+      }
       case 3: g = new THREE.BoxGeometry(1.55, 1.55, 1.55); break;
       case 4: {
         const ico = new THREE.IcosahedronGeometry(1, 3);
@@ -528,6 +556,12 @@ function start(): void {
       default: g = new THREE.IcosahedronGeometry(1, 3);
     }
     player.geometry = g;
+  };
+
+  const setShape = (n: number): void => {
+    if (shapeSwapT > 0) return;
+    pendingShape = n;
+    shapeSwapT = SHAPE_SWAP_DURATION;
     sfx.shape();
   };
 
@@ -564,6 +598,7 @@ function start(): void {
   const yAxis = new THREE.Vector3(0, 1, 0);
   let camYaw = 0;
   let camPitch = 0;
+  let baseRotY = 0;
   const CAM_YAW_SPEED = 2.2;
   const CAM_PITCH_SPEED = 1.6;
   const CAM_PITCH_MIN = -0.5;
@@ -734,8 +769,8 @@ function start(): void {
       if (inLen > 0) { ix /= inLen; iz /= inLen; }
 
       const cosY = Math.cos(camYaw), sinY = Math.sin(camYaw);
-      const dx = ix * cosY + iz * sinY;
-      const dz = -ix * sinY + iz * cosY;
+      const dx = ix * cosY - iz * sinY;
+      const dz = ix * sinY + iz * cosY;
 
       const speed = rolling ? ROLL_SPEED : MOVE_SPEED;
       const responsiveness = grounded ? (rolling ? 5 : 10) : 2;
@@ -845,44 +880,55 @@ function start(): void {
         const j = jellies[i]!;
 
         if (!j.grounded) {
-          j.vel.y -= GRAVITY * dt;
-          if (j.vel.y < j.fallPeakVy) j.fallPeakVy = j.vel.y;
-          j.mesh.position.x += j.vel.x * dt;
-          j.mesh.position.y += j.vel.y * dt;
-          j.mesh.position.z += j.vel.z * dt;
-          const drag = Math.exp(-0.5 * dt);
-          j.vel.x *= drag;
-          j.vel.z *= drag;
-
+          const TERMINAL_VY = 22;
+          if (j.vel.y < -TERMINAL_VY) j.vel.y = -TERMINAL_VY;
           j.wasGrounded = j.grounded;
+
+          const moveEst = (Math.abs(j.vel.y) + Math.hypot(j.vel.x, j.vel.z)) * dt;
+          const maxStep = Math.max(0.15, j.radius * 0.5);
+          const substeps = Math.min(6, Math.max(1, Math.ceil(moveEst / maxStep)));
+          const sdt = dt / substeps;
+          const drag = Math.exp(-0.5 * sdt);
+
           j.grounded = false;
-          for (const p of platforms) {
-            const cx = Math.max(p.aabb.min.x, Math.min(j.mesh.position.x, p.aabb.max.x));
-            const cy = Math.max(p.aabb.min.y, Math.min(j.mesh.position.y, p.aabb.max.y));
-            const cz = Math.max(p.aabb.min.z, Math.min(j.mesh.position.z, p.aabb.max.z));
-            const ddx = j.mesh.position.x - cx;
-            const ddy = j.mesh.position.y - cy;
-            const ddz = j.mesh.position.z - cz;
-            const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
-            if (d2 < j.radius * j.radius && d2 > 1e-8) {
-              const dd = Math.sqrt(d2);
-              const nx = ddx / dd, ny = ddy / dd, nz = ddz / dd;
-              const ov = j.radius - dd;
-              j.mesh.position.x += nx * ov;
-              j.mesh.position.y += ny * ov;
-              j.mesh.position.z += nz * ov;
-              const vn = j.vel.x * nx + j.vel.y * ny + j.vel.z * nz;
-              if (vn < 0) {
-                j.vel.x -= nx * vn;
-                j.vel.y -= ny * vn;
-                j.vel.z -= nz * vn;
-              }
-              if (ny > 0.6) {
-                if (p.bounceV > 0) {
-                  j.vel.y = p.bounceV * 0.75;
-                  j.fallPeakVy = 0;
-                } else {
-                  j.grounded = true;
+          for (let sub = 0; sub < substeps && !j.grounded; sub++) {
+            j.vel.y -= GRAVITY * sdt;
+            if (j.vel.y < -TERMINAL_VY) j.vel.y = -TERMINAL_VY;
+            if (j.vel.y < j.fallPeakVy) j.fallPeakVy = j.vel.y;
+            j.mesh.position.x += j.vel.x * sdt;
+            j.mesh.position.y += j.vel.y * sdt;
+            j.mesh.position.z += j.vel.z * sdt;
+            j.vel.x *= drag;
+            j.vel.z *= drag;
+
+            for (const p of platforms) {
+              const cx = Math.max(p.aabb.min.x, Math.min(j.mesh.position.x, p.aabb.max.x));
+              const cy = Math.max(p.aabb.min.y, Math.min(j.mesh.position.y, p.aabb.max.y));
+              const cz = Math.max(p.aabb.min.z, Math.min(j.mesh.position.z, p.aabb.max.z));
+              const ddx = j.mesh.position.x - cx;
+              const ddy = j.mesh.position.y - cy;
+              const ddz = j.mesh.position.z - cz;
+              const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+              if (d2 < j.radius * j.radius && d2 > 1e-8) {
+                const dd = Math.sqrt(d2);
+                const nx = ddx / dd, ny = ddy / dd, nz = ddz / dd;
+                const ov = j.radius - dd;
+                j.mesh.position.x += nx * ov;
+                j.mesh.position.y += ny * ov;
+                j.mesh.position.z += nz * ov;
+                const vn = j.vel.x * nx + j.vel.y * ny + j.vel.z * nz;
+                if (vn < 0) {
+                  j.vel.x -= nx * vn;
+                  j.vel.y -= ny * vn;
+                  j.vel.z -= nz * vn;
+                }
+                if (ny > 0.6) {
+                  if (p.bounceV > 0) {
+                    j.vel.y = p.bounceV * 0.75;
+                    j.fallPeakVy = 0;
+                  } else {
+                    j.grounded = true;
+                  }
                 }
               }
             }
@@ -1054,6 +1100,19 @@ function start(): void {
       }
     }
 
+    let shapeScale = 1;
+    let shapeSpin = 0;
+    if (shapeSwapT > 0) {
+      shapeSwapT = Math.max(0, shapeSwapT - dt);
+      const progress = 1 - shapeSwapT / SHAPE_SWAP_DURATION;
+      if (progress >= 0.5 && pendingShape !== null) {
+        applyShape(pendingShape);
+        pendingShape = null;
+      }
+      shapeScale = 1 - Math.sin(progress * Math.PI) * 0.6;
+      shapeSpin = progress * Math.PI * 2;
+    }
+
     const hSpeed = Math.hypot(vel.x, vel.z);
     let squash = 1, stretch = 1;
     if (grounded) {
@@ -1064,8 +1123,10 @@ function start(): void {
       stretch = 1 + Math.max(-0.15, Math.min(0.25, vel.y * 0.03));
       squash = 1 / Math.sqrt(stretch);
     }
-    player.scale.set(playerRadius * squash, playerRadius * stretch, playerRadius * squash);
-    if (hSpeed > 0.5) player.rotation.y = Math.atan2(vel.x, vel.z);
+    const sr = playerRadius * shapeScale;
+    player.scale.set(sr * squash, sr * stretch, sr * squash);
+    if (hSpeed > 0.5) baseRotY = Math.atan2(vel.x, vel.z);
+    player.rotation.y = baseRotY + shapeSpin;
 
     finishRing.rotation.z = t * 0.5;
 
